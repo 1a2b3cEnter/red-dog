@@ -3,224 +3,442 @@ import csv
 import time
 import random
 import requests
+import threading
 import tkinter as tk
+from tkinter import scrolledtext
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 
-# 设置多个请求头反爬
-def get_ua():
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36 '
-        'OPR/26.0.1656.60',
-        'Opera/8.0 (Windows NT 5.1; U; en)',
-        'Mozilla/5.0 (Windows NT 5.1; U; en; rv:1.8.1) Gecko/20061208 Firefox/2.0.0 Opera 9.50',
-        'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; en) Opera 9.50',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:34.0) Gecko/20100101 Firefox/34.0',
-        'Mozilla/5.0 (X11; U; Linux x86_64; zh-CN; rv:1.9.2.10) Gecko/20100922 Ubuntu/10.10 (maverick) Firefox/3.6.10',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/534.57.2 (KHTML, like Gecko) Version/5.1.7 Safari/534.57.2 ',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
-        'Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US) AppleWebKit/534.16 (KHTML, like Gecko) Chrome/10.0.648.133 '
-        'Safari/534.16',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.101 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.11 (KHTML, like Gecko) Chrome/20.0.1132.11 '
-        'TaoBrowser/2.0 Safari/536.11',
-        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.71 Safari/537.1 '
-        'LBBROWSER',
-        'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; QQDownload 732; .NET4.0C; .NET4.0E)',
-        'Mozilla/5.0 (Windows NT 5.1) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/17.0.963.84 Safari/535.11 SE 2.X '
-        'MetaSr 1.0',
-        'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1; Trident/4.0; SV1; QQDownload 732; .NET4.0C; .NET4.0E; SE '
-        '2.X MetaSr 1.0) '
-    ]
-    user_agent = random.choice(user_agents)
-    return user_agent
+class JDCrawler:
+    def __init__(self):
+        self.driver = self.setup_driver()
+        self.headers = {
+            'User-Agent': self.get_ua(),
+            'Referer': 'https://item.jd.com/'
+        }
+        self.product_data = []
+        self.comments_data = []
+        self.running = True
+        self.lock = threading.Lock()
+
+    def setup_driver(self):
+        options = webdriver.ChromeOptions()
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        options.add_argument('--ignore-certificate-errors')
+        options.add_experimental_option('excludeSwitches', ['enable-logging'])
+        driver = webdriver.Chrome(options=options)
+        driver.implicitly_wait(10)  # 添加隐式等待
+        return driver
+
+    def get_ua(self):
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36'
+        ]
+        return random.choice(user_agents)
+
+    def login(self):
+        try:
+            self.driver.maximize_window()
+            self.driver.get("https://passport.jd.com/new/login.aspx")
+
+            # 切换到账户登录
+            WebDriverWait(self.driver, 20).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[@id="content"]/div[2]/div[1]/div/div/div[2]/div[1]/a'))
+            ).click()
+
+            # 等待用户手动登录
+            WebDriverWait(self.driver, 300).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="user"]/div[1]/div/a'))
+            )
+
+            # 登录后尝试关闭可能的弹窗
+            self.close_popups()
+            return True
+        except TimeoutException:
+            return False
+
+    def close_popups(self):
+        """关闭各种可能出现的弹窗"""
+        try:
+            # 尝试关闭可能的弹窗
+            close_selectors = [
+                '.popup-close',
+                '.layer-close',
+                '.notice-close',
+                '.umc-equity .close',
+                '.close-notice'
+            ]
+
+            for selector in close_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        if element.is_displayed():
+                            element.click()
+                            time.sleep(0.5)
+                except:
+                    pass
+
+            # 尝试关闭优惠券弹窗
+            try:
+                coupon_close = self.driver.find_element(By.CSS_SELECTOR, '.coupon-close')
+                if coupon_close.is_displayed():
+                    coupon_close.click()
+                    time.sleep(0.5)
+            except:
+                pass
+        except:
+            pass
+
+    def search_products(self, keyword, max_items):
+        try:
+            # 确保在首页
+            self.driver.get("https://www.jd.com")
+            time.sleep(1)
+
+            # 关闭首页可能的弹窗
+            self.close_popups()
+
+            # 搜索框
+            search_box = WebDriverWait(self.driver, 40).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="key"]'))
+
+            )
+
+            search_box.clear()
+            search_box.send_keys(keyword)
+
+            # 搜索按钮 - 使用CSS选择器提高稳定性
+            search_btn = WebDriverWait(self.driver, 20).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, '#search button.button'))
+            )
+
+            # 使用JavaScript点击，避免元素被遮挡
+            self.driver.execute_script("arguments[0].click();", search_btn)
+
+            # 等待结果加载
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="J_goodsList"]/ul/li[1]'))
+            )
+
+            # 滚动页面加载更多商品
+            self.scroll_to_load_products()
+
+            products = []
+            for i in range(1, max_items + 1):
+                try:
+                    # 商品链接
+                    item = self.driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{i}]')
+
+                    # 商品ID
+                    link = item.find_element(By.CSS_SELECTOR, '.p-img a').get_attribute('href')
+                    product_id = re.search(r'/(\d+).html', link).group(1)
+
+                    # 价格
+                    try:
+                        price = item.find_element(By.CSS_SELECTOR, '.p-price strong i').text
+                    except:
+                        price = "无价格信息"
+
+                    # 商品名称
+                    try:
+                        name = item.find_element(By.CSS_SELECTOR, '.p-name em').text
+                    except:
+                        name = "无商品名称"
+
+                    # 店铺名称
+                    try:
+                        shop = item.find_element(By.CSS_SELECTOR, '.p-shop span a').text
+                    except:
+                        shop = "自营"
+
+                    products.append({
+                        'id': product_id,
+                        'name': name,
+                        'price': price,
+                        'shop': shop
+                    })
+                except NoSuchElementException:
+                    break
+                except Exception as e:
+                    print(f"解析商品{i}出错: {str(e)}")
+
+            return products
+        except Exception as e:
+            print(f"搜索商品出错: {str(e)}")
+            return []
+
+    def scroll_to_load_products(self):
+        """滚动页面以加载更多商品"""
+        scroll_script = """
+            window.scrollTo(0, document.body.scrollHeight/3);
+            setTimeout(function() {
+                window.scrollTo(0, document.body.scrollHeight*2/3);
+                setTimeout(function() {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }, 800);
+            }, 800);
+        """
+        self.driver.execute_script(scroll_script)
+        time.sleep(2.5)
+
+    def fetch_comments(self, product, max_pages=10):
+        comments = []
+        try:
+            for page in range(0, max_pages):
+                if not self.running:
+                    break
+
+                url = f'https://api.m.jd.com/?appid=item-v3&functionId=pc_club_productPageComments&client=pc' \
+                      f'&clientVersion=1.0.0&t={int(time.time() * 1000)}&loginType=3&productId={product["id"]}' \
+                      f'&score=0&sortType=5&page={page}&pageSize=10&isShadowSku=0&fold=1'
+
+                try:
+                    response = requests.get(url, headers=self.headers, timeout=10)
+                    if response.status_code != 200:
+                        continue
+
+                    data = response.json()
+                    if 'comments' not in data:
+                        break
+
+                    for comment in data['comments']:
+                        comments.append({
+                            'product_id': product['id'],
+                            'user_id': comment.get('id', ''),
+                            'content': comment.get('content', ''),
+                            'creation_time': comment.get('creationTime', ''),
+                            'location': comment.get('location', ''),
+                            'score': comment.get('score', ''),
+                            'product_info': {
+                                'name': product['name'],
+                                'price': product['price'],
+                                'shop': product['shop']
+                            }
+                        })
+
+                    # 如果没有更多评论了
+                    if not data.get('comments') or len(data['comments']) < 10:
+                        break
+
+                    # 避免请求过快
+                    time.sleep(random.uniform(0.5, 1.5))
+                except Exception as e:
+                    print(f"获取评论出错: {str(e)}")
+                    time.sleep(2)
+        except Exception as e:
+            print(f"获取商品评论出错: {str(e)}")
+
+        return comments
+
+    def save_to_csv(self, filename, data):
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                fieldnames = ['用户id', '品牌', '型号', '店铺', '评论发布时间', '地区', '价格', '评分', '评论']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+
+                for comment in data:
+                    writer.writerow({
+                        '用户id': comment['user_id'],
+                        '品牌': '',  # 品牌信息需要从商品名称中提取
+                        '型号': comment['product_info']['name'],
+                        '店铺': comment['product_info']['shop'],
+                        '评论发布时间': comment['creation_time'],
+                        '地区': comment['location'],
+                        '价格': comment['product_info']['price'],
+                        '评分': comment['score'],
+                        '评论': comment['content']
+                    })
+            return True
+        except Exception as e:
+            print(f"保存文件出错: {str(e)}")
+            return False
+
+    def close(self):
+        self.running = False
+        self.driver.quit()
 
 
-# 设置登录网址
-def login():
-    # 将浏览器最大化显示
-    driver.maximize_window()
-    # 指定加载页面
-    driver.get(
-        "https://passport.jd.com/new/login.aspx?ReturnUrl=https%3A%2F%2Fwww.jd.com%2F%3Fcu%3Dtrue%26utm_source%3Dwww.baidu.com%26utm_medium%3Dtuiguang%26utm_campaign%3Dt_1003608409_%26utm_term%3D1e92b18a171a44a480951ab18457597e")
-    driver.implicitly_wait(30)
-    driver.find_element(By.XPATH, '//*[@id="content"]/div[2]/div[1]/div/div/div[2]/div[1]/a').click()
-
-
-# 点击页面搜索框
-def click(id_data):
-    # 隐式等待查找元素30秒，false则退出
-    driver.implicitly_wait(30)
-    driver.find_element(By.XPATH, "/html/body/div[1]/div[4]/div/div[2]/div/div[2]/input").send_keys(id_data)
-    time.sleep(1)
-    driver.find_element(By.XPATH, "/html/body/div[1]/div[4]/div/div[2]/div/div[2]/button").click()
-    time.sleep(2)
-    data = []
-    # 滑动页面到指定元素
-    for c in range(1, int(input_number + 1)):
-        driver.implicitly_wait(30)
-        # 捕获页面标签
-        element_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[3]/a')
-        price_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[2]/strong/i')
-        model_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[3]/a/em')
-        brand_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[1]/div/div[5]/span/a')
-        # 提取标签中的商品ID
-        href = element_data.get_attribute('href')
-        html = re.compile(r'm/(?P<num>.*?).html')
-        iterator = html.findall(href)
-        for j in iterator:
-            data.append(int(j))
-        # 提取价格和商品名字
-        price = price_data.text
-        model = model_data.text
-        brand = brand_data.text
-        pdata.append(price)
-        mdata.append(model)
-        bdata.append(brand)
-    print("<----------请稍等,数据爬取模块正在启用---------->")
-    return data
-
-
-#  点击新的页面的搜索框
-def click1(id_data):
-    driver.find_element(By.XPATH, "/html/body/div[3]/div[2]/div/input").clear()
-    time.sleep(1)
-    driver.find_element(By.XPATH, "/html/body/div[3]/div[2]/div/input").send_keys(id_data)
-    time.sleep(3)
-    driver.find_element(By.XPATH, "/html/body/div[3]/div[2]/div/button").click()
-    time.sleep(2)
-    data = []
-    for c in range(1, input_number + 1):
-        driver.implicitly_wait(30)
-        # 捕获页面标签
-        element = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[3]/a')
-        price_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[2]/strong/i')
-        model_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[{c}]/div/div[3]/a/em')
-        brand_data = driver.find_element(By.XPATH, f'//*[@id="J_goodsList"]/ul/li[1]/div/div[5]/span/a')
-        # 提取标签中的商品ID和价格
-        href = element.get_attribute('href')
-        html = re.compile(r'm/(?P<num>.*?).html')
-        iterator = html.findall(href)
-        for j in iterator:
-            data.append(int(j))
-        # 提取价格和商品名字
-        price = price_data.text
-        model = model_data.text
-        brand = brand_data.text
-        pdata1.append(price)
-        mdata1.append(model)
-        bdata1.append(brand)
-    print("<----------请稍等,数据爬取模块正在启用---------->")
-    return data
-
-
-# 设置爬取字段并写入文件
-def index(product, p_data, m_data, b_data):
-    f = open(f"D://{cid}.csv", 'w', newline='', encoding='utf-8-sig')
-    fieldnames = ['用户id', '品牌', '型号', '店铺', '评论发布时间', '地区', '价格', '评分', '评论']
-    csvwriter = csv.DictWriter(f, fieldnames=fieldnames)
-    csvwriter.writeheader()
-    site = 0
-    p_site = 0
-    for production in product:
-        site += 1
-        for page in range(100):
-            url = f'https://api.m.jd.com/?appid=item-v3&functionId=pc_club_productPageComments&client=pc' \
-                  f'&clientVersion=1.0.0&t=1695028466426&loginType=3&uuid=122270672.1694611322104588022183.1694611322' \
-                  f'.1695018169.1695026648.3&productId={production}&score=0&sortType=5&page=' \
-                  f'{page}&pageSize=10&isShadowSku=0&fold=1&bbtf=&shield= '
-            headers = {'User-Agent': get_ua()}
-            response = requests.get(url, headers=headers)
-            # for循环遍历，一个一个提取列表里面元素
-            for g_index in response.json()['comments']:
-                c_id = g_index.get('id')
-                content = g_index.get('content')
-                date = g_index.get('creationTime')
-                location = g_index.get('location')
-                score = g_index.get('score')
-                csvwriter.writerow(
-                    {'用户id': c_id, '品牌': cid, '型号': m_data[p_site], '店铺': b_data[p_site], '评论发布时间': date, '地区': location, '价格': p_data[p_site], '评分': score, '评论': content})
-            print(f"爬取第{site}条第{page}页成功!")
-        p_site += 1
-    print(f"{cid}的{input_number}条数据已经爬完,请于D盘根目录查看！！！")
-
-
-#  设置提取的文字格式
-def test(content, what, name):
-    print(content, what, name)
-    return content.isalpha()
-
-
-# 设置应用界面
-class GUI:
-    # 初始化字符串
+class JDGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title('京东数据获取程序')
-        self.root.geometry("500x200+500+250")
-        self.V = tk.StringVar()
-        self.V1 = tk.IntVar()
-        self.frame_1 = tk.Frame(self.root)
-        self.testCMD = (self.root.register(test), '%P', '%v', '%W')
-        self.label = tk.Label(self.root, bg='grey', text='请输入你爬取的信息(如:联想电脑，松下电冰箱，索尼相机(注意多个品牌以and分隔)', height=1, width=70)
-        self.text = tk.Entry(self.root, width=70, textvariable=self.V, validate='key', validatecommand=self.testCMD)
-        self.label1 = tk.Label(self.root, text='', height=1, width=70)
-        self.label2 = tk.Label(self.root, bg='grey', text='请输入你爬取的店铺条数：', height=1, width=20)
-        self.text2 = tk.Entry(self.root, width=12, textvariable=self.V1, validate='key', validatecommand=self.testCMD)
-        # Tkinter 文本框控件中第一个字符的位置是 1.0，可以用数字 1.0 或字符串"1.0"来表示。
-        # "end"表示它将读取直到文本框的结尾的输入。我们也可以在这里使用 tk.END 代替字符串"end"。
-        self.button = tk.Button(self.root, height=1, width=12, bg='green', text='确认爬取并退出', command=self.root.destroy)
-        self.interface()
+        self.root.geometry("800x600+300+100")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    def interface(self):
-        """"界面编写位置"""
-        """"row控制行数，column控制列数，colucomspan控制多少列，rowspan控制多少行"""
-        self.label.grid(row=0, column=0, columnspan=20)
-        self.text.grid(row=1, column=0, columnspan=20)
-        self.label1.grid(row=2, column=0, columnspan=20)
-        self.label2.grid(row=3, column=0, columnspan=1)
-        self.text2.grid(row=3, column=1, columnspan=1)
-        self.button.grid(row=4, column=1)
+        self.crawler = None
+        self.running = False
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 标题
+        tk.Label(self.root, text='京东商品评论爬取工具', font=('Arial', 16)).pack(pady=10)
+
+        # 输入框框架
+        input_frame = tk.Frame(self.root)
+        input_frame.pack(fill='x', padx=20, pady=10)
+
+        # 关键词输入
+        tk.Label(input_frame, text='搜索关键词（多个用逗号分隔）:', anchor='w').grid(row=0, column=0, sticky='w')
+        self.keyword_var = tk.StringVar()
+        tk.Entry(input_frame, textvariable=self.keyword_var, width=50).grid(row=0, column=1, sticky='ew', padx=10)
+
+        # 商品数量
+        tk.Label(input_frame, text='爬取商品数量:').grid(row=1, column=0, sticky='w', pady=10)
+        self.item_count_var = tk.IntVar(value=5)
+        tk.Entry(input_frame, textvariable=self.item_count_var, width=10).grid(row=1, column=1, sticky='w', padx=10)
+
+        # 评论页数
+        tk.Label(input_frame, text='每商品评论页数:').grid(row=2, column=0, sticky='w')
+        self.page_count_var = tk.IntVar(value=10)
+        tk.Entry(input_frame, textvariable=self.page_count_var, width=10).grid(row=2, column=1, sticky='w', padx=10)
+
+        # 按钮框架
+        button_frame = tk.Frame(self.root)
+        button_frame.pack(fill='x', padx=20, pady=10)
+
+        self.start_btn = tk.Button(button_frame, text='开始爬取', command=self.start_crawling, bg='#4CAF50', fg='white')
+        self.start_btn.pack(side='left', padx=5)
+
+        self.stop_btn = tk.Button(button_frame, text='停止爬取', command=self.stop_crawling, state='disabled',
+                                  bg='#F44336', fg='white')
+        self.stop_btn.pack(side='left', padx=5)
+
+        # 日志输出
+        tk.Label(self.root, text='运行日志:').pack(anchor='w', padx=20)
+        self.log_area = scrolledtext.ScrolledText(self.root, height=15)
+        self.log_area.pack(fill='both', expand=True, padx=20, pady=(0, 10))
+        self.log_area.configure(state='disabled')
+
+    def log(self, message):
+        self.log_area.configure(state='normal')
+        self.log_area.insert('end', f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+        self.log_area.see('end')
+        self.log_area.configure(state='disabled')
+
+    def start_crawling(self):
+        if self.running:
+            return
+
+        self.running = True
+        self.start_btn.config(state='disabled')
+        self.stop_btn.config(state='normal')
+
+        keywords = [k.strip() for k in self.keyword_var.get().split(',')]
+        max_items = self.item_count_var.get()
+        max_pages = self.page_count_var.get()
+
+        if not keywords:
+            self.log("请输入关键词!")
+            self.running = False
+            self.start_btn.config(state='normal')
+            self.stop_btn.config(state='disabled')
+            return
+
+        self.log("=" * 50)
+        self.log(f"开始爬取任务: 关键词={', '.join(keywords)}, 商品数={max_items}, 评论页数={max_pages}")
+
+        # 启动爬虫线程
+        threading.Thread(target=self.run_crawler, args=(keywords, max_items, max_pages), daemon=True).start()
+
+    def stop_crawling(self):
+        self.running = False
+        if self.crawler:
+            self.crawler.running = False
+        self.log("爬取任务已停止")
+        self.start_btn.config(state='normal')
+        self.stop_btn.config(state='disabled')
+
+    def run_crawler(self, keywords, max_items, max_pages):
+        try:
+            self.crawler = JDCrawler()
+            self.log("正在初始化浏览器...")
+
+            if not self.crawler.login():
+                self.log("登录失败或超时，请重试")
+                self.running = False
+                return
+
+            self.log("登录成功，开始爬取...")
+
+            all_comments = []
+            for keyword in keywords:
+                if not self.running:
+                    break
+
+                self.log(f"搜索关键词: {keyword}")
+                products = self.crawler.search_products(keyword, max_items)
+
+                if not products:
+                    self.log(f"未找到关键词 '{keyword}' 的商品")
+                    continue
+
+                self.log(f"找到 {len(products)} 个商品，开始爬取评论...")
+
+                # 多线程爬取评论
+                threads = []
+                results = []
+
+                def worker(product):
+                    comments = self.crawler.fetch_comments(product, max_pages)
+                    with self.lock:
+                        results.extend(comments)
+                        self.log(f"商品 {product['id']} 爬取完成，获取 {len(comments)} 条评论")
+
+                for product in products:
+                    if not self.running:
+                        break
+                    t = threading.Thread(target=worker, args=(product,))
+                    t.start()
+                    threads.append(t)
+                    # 控制并发数
+                    if len(threads) >= 3:
+                        for t in threads:
+                            t.join()
+                        threads = []
+
+                # 等待剩余线程完成
+                for t in threads:
+                    t.join()
+
+                all_comments.extend(results)
+
+            if all_comments:
+                filename = f"JD_Comments_{time.strftime('%Y%m%d%H%M%S')}.csv"
+                if self.crawler.save_to_csv(filename, all_comments):
+                    self.log(f"数据保存成功: {filename}")
+                else:
+                    self.log("数据保存失败")
+            else:
+                self.log("未获取到任何评论数据")
+
+            self.log("爬取任务完成")
+        except Exception as e:
+            self.log(f"爬取过程中出错: {str(e)}")
+        finally:
+            if self.crawler:
+                self.crawler.close()
+            self.running = False
+            self.start_btn.config(state='normal')
+            self.stop_btn.config(state='disabled')
+
+    def on_closing(self):
+        if self.running:
+            self.stop_crawling()
+        self.root.destroy()
 
 
 if __name__ == '__main__':
-    app = GUI()
+    app = JDGUI()
     app.root.mainloop()
-    # 隐藏"Chrome正在受到自动软件的控制"
-    options = webdriver.ChromeOptions()
-    # 去掉开发者警告
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_experimental_option('excludeSwitches', ['enable-automation'])
-    # 忽略证书错误
-    options.add_argument('--ignore-certificate-errors')
-    # 忽略 Bluetooth: bluetooth_adapter_winrt.cc:1075 Getting Default Adapter failed. 错误
-    options.add_experimental_option('excludeSwitches', ['enable-automation'])
-    # 忽略 DevTools listening on ws://127.0.0.1... 提示
-    options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    # 初始化配置
-    driver = webdriver.Chrome(chrome_options=options)
-    login()
-    # 定义列表接收数据
-    pdata = []
-    pdata1 = []
-    mdata = []
-    mdata1 = []
-    bdata = []
-    bdata1 = []
-    n = 0
-    # 获取爬取的数据条数
-    input_number = int(app.V1.get())
-    # 获取爬取的文本数据
-    for app.V.get().split('and')[n] in range(len(app.V.get().split('and'))):
-        if n == 0:
-            cid = app.V.get().split('and')[n]
-            index(click(cid), pdata, mdata, bdata)
-            n += 1
-        else:
-            cid = app.V.get().split('and')[n]
-            index(click1(cid), pdata1, mdata1, bdata1)
-            n += 1
-    input()
